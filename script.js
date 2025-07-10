@@ -1,147 +1,264 @@
-//DOM elements
+// DOM elements
 const tabs = document.querySelectorAll(".tab");
 const tabContents = document.querySelectorAll('.tab-content');
 let currentTab = 'personal';
 
-// Initialize the chart with the default tab
-switchTab(currentTab);
-calculateEMI(currentTab);
+// Constants for max loan periods and interest rates
+const MAX_LOAN_PERIODS = {
+    personal: 120, // 10 years
+    home: 360,     // 30 years
+    car: 84        // 7 years
+};
 
+const INTEREST_RATES = {
+    personal: { min: 15, max: 25 },
+    home: { min: 10, max: 15 },
+    car: { min: 10, max: 25 }
+};
 
-//Adding Event Listener to all tabs
-for (let tab of tabs) {
-    tab.addEventListener('click', () => {
-        const tabType = tab.getAttribute('data-tab');
-        switchTab(tabType);
-        const result = calculateEMI(tabType);
-        updatePieChart(result.loanAmount, result.totalInterest);
-        animateResults(tabType);
-    })
+// --- Initialization ---
+initializeCalculator();
+
+function initializeCalculator() {
+    // Set up tab switching logic
+    tabs.forEach(tab => {
+        tab.addEventListener('click', () => {
+            const tabType = tab.getAttribute('data-tab');
+            switchTab(tabType);
+            clearAllErrors(tabType); // Clear errors when switching tabs
+            resetResultsDisplay(tabType); // Reset UI results on tab switch
+            updatePieChart(0, 0); // Reset chart
+            document.getElementById('chartEmi').textContent = formatCurrency(0); // Reset chart EMI display
+        });
+    });
+
+    // Set up calculate and reset buttons
+    ['personal', 'home', 'car'].forEach(tabType => {
+        document.getElementById(`${tabType}-calculate-btn`).addEventListener('click', () => {
+            calculateAndUpdateChart(tabType); // This function will now handle all validation and calculation
+        });
+        document.getElementById(`${tabType}-reset-btn`).addEventListener('click', () => {
+            resetButton(tabType);
+        });
+    });
+
+    // Set up real-time input validations
+    setupInputValidations();
+
+    // Initial setup for the default tab
+    switchTab(currentTab);
+    resetResultsDisplay(currentTab);
+    updatePieChart(0, 0);
+    document.getElementById('chartEmi').textContent = formatCurrency(0);
 }
 
+// --- Tab Switching Logic ---
 function switchTab(tabType) {
-    // Update current tab
     currentTab = tabType;
 
-    // Update active tab state
     tabs.forEach(tab => {
-        if (tab.getAttribute('data-tab') === tabType) {
-            tab.classList.add('active');
-        } else {
-            tab.classList.remove('active');
-        }
+        tab.classList.toggle('active', tab.getAttribute('data-tab') === tabType);
     });
 
-    // Show appropriate tab content
     tabContents.forEach(content => {
-        if (content.id === tabType) {
-            content.classList.add('active');
-        } else {
-            content.classList.remove('active');
-        }
+        content.classList.toggle('active', content.id === tabType);
     });
 }
 
-function timeValidation(tabType) {
+// --- Validation Functions ---
+
+// Main validation function to be called on "Calculate EMI" click
+function validateAllFields(tabType) {
+    let isValid = true; // Overall flag for validity
+
+    // Get all relevant input elements for the current tab
+    const principalField = document.getElementById(`${tabType}-principal`);
+    const rateField = document.getElementById(`${tabType}-rate`);
     const yearsField = document.getElementById(`${tabType}-years`);
     const monthsField = document.getElementById(`${tabType}-months`);
-    const errorId = document.getElementById(`${tabType}-time-period`);
-    const years = parseInt(yearsField.value);
-    const months = parseInt(monthsField.value);
+    const downPaymentField = document.getElementById(`${tabType}-downpayment`);
+    // NEW: Get the dedicated error container for time-related errors
+    const dedicatedTimeErrorContainer = document.getElementById(`${tabType}-time-error-container`);
 
-    const maxTimePeriod = {
-        personal: 120, // 10 years
-        home: 360, // 30 years
-        car: 84 // 7 years
-    };
 
-    const maxMonths = maxTimePeriod[tabType];
-    const totalMonths = years * 12 + months;
+    // Validate Principal
+    let principal = parseFloat(principalField.value);
+    if (!isNaN(principal)) {
+        principal = Math.round(principal); // Round principal on calculate
+        principalField.value = principal;
+    }
 
-    if (totalMonths > maxMonths) {
-        showError(errorId, `⚠️${tabType.charAt(0).toUpperCase() + tabType.slice(1)} loan period cannot exceed ${maxTimePeriod[tabType] / 12} years.`);
-        return false;
+    if (principalField.value.trim() === "" || isNaN(principal) || principal <= 0) {
+        showError(principalField, "⚠️Principal must be a positive whole number.");
+        isValid = false;
     } else {
-        clearError(errorId); // Clear error if valid
-        return true;
+        clearError(principalField);
     }
 
-}
+    // Validate Rate
+    const rate = parseFloat(rateField.value);
+    const { min: rateMin, max: rateMax } = INTEREST_RATES[tabType];
+    if (rateField.value.trim() === "" || isNaN(rate) || rate < rateMin || rate > rateMax) {
+        showError(rateField, `⚠️Rate must be between ${rateMin}% and ${rateMax}%.`);
+        isValid = false;
+    } else {
+        clearError(rateField);
+    }
 
-function validateFields(tabType) {
-    let isValid = true;
-
-    // List of required fields for the tab
-    const requiredFields = [
-        `${tabType}-principal`,
-        `${tabType}-rate`,
-        `${tabType}-years`,
-        `${tabType}-months`
-    ];
-
-    // Add downpayment field for non-personal tabs
+    // Validate Down Payment (if applicable)
     if (tabType !== 'personal') {
-        requiredFields.push(`${tabType}-downpayment`);
-    }
+        let downPayment = parseFloat(downPaymentField.value);
+        if (!isNaN(downPayment)) {
+            downPayment = Math.round(downPayment); // Round down payment on calculate
+            downPaymentField.value = downPayment;
+        }
 
-    // Validate each field
-    requiredFields.forEach(fieldId => {
-        const field = document.getElementById(fieldId);
-        const value = parseFloat(field.value);
-
-        if (isNaN(value) || value < 0 || field.value.trim() === "") {
-            showError(field, "⚠️This field is required and must be valid.");
+        if (downPaymentField.value.trim() === "" || isNaN(downPayment) || downPayment < 0 || downPayment > principal) {
+            showError(downPaymentField, "⚠️Down payment must be a whole number between 0 and principal amount.");
             isValid = false;
         } else {
-            clearError(field);
+            clearError(downPaymentField);
         }
-    });
+    }
 
-    // Additional validation: If years is 0, months cannot be 0
-    const yearsField = document.getElementById(`${tabType}-years`);
-    const monthsField = document.getElementById(`${tabType}-months`);
-    const years = parseInt(yearsField.value);
-    const months = parseInt(monthsField.value);
-
-    if (years === 0 && months === 0) {
-        showError(monthsField, "⚠️If years is 0, months cannot also be 0.");
+    // Validate Years
+    const years = parseFloat(yearsField.value); // Use parseFloat here to check for decimals
+    if (yearsField.value.trim() === "" || isNaN(years) || years < 0) {
+        showError(yearsField, "⚠️Years of loan is required and must be non-negative.");
         isValid = false;
+    } else if (years % 1 !== 0) { // Check for decimal
+        showError(yearsField, "⚠️Years cannot be a decimal value.");
+        isValid = false;
+    } else {
+        clearError(yearsField);
+    }
+
+    // Validate Months
+    const months = parseFloat(monthsField.value); // Use parseFloat here to check for decimals
+    if (monthsField.value.trim() === "" || isNaN(months) || months < 0 || months >= 12) {
+        showError(monthsField, "⚠️Months must be between 0 and 11.");
+        isValid = false;
+    } else if (months % 1 !== 0) { // Check for decimal
+        showError(monthsField, "⚠️Months cannot be a decimal value.");
+        isValid = false;
+    } else {
+        clearError(monthsField);
+    }
+
+    // Validate Years and Months combined (cannot be 0 and 0)
+    // Only perform this check if individual year/month parsing was successful AND they are integers
+    if (isValid && (yearsField.value.trim() !== "" && years % 1 === 0) && (monthsField.value.trim() !== "" && months % 1 === 0) && years === 0 && months === 0) {
+        showError(monthsField, "⚠️Loan period cannot be 0 years and 0 months.");
+        isValid = false;
+    } else if (isValid) {
+        // Ensure to clear the specific combined error if it was previously set
+        let combinedZeroErrorDiv = monthsField.parentNode.querySelector(".error");
+        if (combinedZeroErrorDiv && combinedZeroErrorDiv.textContent === "⚠️Loan period cannot be 0 years and 0 months.") {
+            clearError(monthsField);
+        }
+    }
+
+
+    // Validate Total Loan Period against max allowed
+    const totalMonths = (parseInt(yearsField.value) || 0) * 12 + (parseInt(monthsField.value) || 0); // Use parseInt for total calculation
+    const maxAllowedMonths = MAX_LOAN_PERIODS[tabType];
+    const timeGroupElement = yearsField.closest('.time-inputs'); // Keeping this line as requested
+
+    // Clear previous max period error for the dedicated container
+    let existingMaxError = dedicatedTimeErrorContainer.querySelector(".error");
+    if (existingMaxError && existingMaxError.textContent.includes("loan period cannot exceed")) {
+        clearErrorForElement(dedicatedTimeErrorContainer); // Use the new helper function
+    }
+
+    if (isValid && totalMonths > maxAllowedMonths) {
+        // Show error in the dedicated container, not the timeGroupElement
+        showErrorInContainer(dedicatedTimeErrorContainer, `⚠️${tabType.charAt(0).toUpperCase() + tabType.slice(1)} loan period cannot exceed ${maxAllowedMonths / 12} years.`);
+        isValid = false;
+    } else {
+        // Ensure to clear the dedicated error message if valid now
+        clearErrorForElement(dedicatedTimeErrorContainer);
     }
 
     return isValid;
 }
 
-//Function for calculating and updating the chart
+// --- Calculation and UI Update Logic ---
+
+// Function for calculating and updating the chart (main entry point for EMI calculation)
 function calculateAndUpdateChart(tabType) {
-    // Validate fields before calculation
-    if (!validateFields(tabType)) {
-        return; // Stop if validation fails
+    // Clear all existing errors before running new validation
+    clearAllErrors(tabType);
+
+    // Validate all fields. If validation fails, stop.
+    if (!validateAllFields(tabType)) {
+        resetResultsDisplay(tabType);
+        updatePieChart(0, 0);
+        document.getElementById('chartEmi').textContent = formatCurrency(0);
+        return;
     }
 
-    // Validate time period
-    if (!timeValidation(tabType)) {
-        return; // Stop if time validation fails
+    // If all validations pass, proceed with calculation
+    const principal = parseFloat(document.getElementById(`${tabType}-principal`).value);
+    const rate = parseFloat(document.getElementById(`${tabType}-rate`).value);
+    let downPayment = 0;
+    if (tabType !== 'personal') {
+        downPayment = parseFloat(document.getElementById(`${tabType}-downpayment`).value);
     }
-    // Calculate EMI and update chart
-    const result = calculateEMI(tabType);
-    updatePieChart(result.loanAmount, result.totalInterest);
-    animateResults(tabType);
+    const years = parseInt(document.getElementById(`${tabType}-years`).value); // Use parseInt for calculation
+    const months = parseInt(document.getElementById(`${tabType}-months`).value); // Use parseInt for calculation
+
+    // Calculate loan amount (principal - down payment)
+    const loanAmount = principal - downPayment;
+
+    // Calculate total months
+    const totalMonths = (years * 12) + months;
+
+    // Calculate monthly interest rate
+    const monthlyRate = (rate / 12) / 100;
+
+    // Calculate EMI
+    let emi = 0;
+    if (loanAmount > 0 && totalMonths > 0 && monthlyRate > 0) {
+        const numerator = loanAmount * monthlyRate * Math.pow(1 + monthlyRate, totalMonths);
+        const denominator = Math.pow(1 + monthlyRate, totalMonths) - 1;
+        emi = numerator / denominator;
+    } else if (loanAmount > 0 && totalMonths > 0 && monthlyRate === 0) { // Special case for 0% interest
+        emi = loanAmount / totalMonths;
+    }
+
+    // Calculate total payment and interest
+    const totalPayment = emi * totalMonths;
+    const totalInterest = totalPayment - loanAmount;
+
+    // Update UI with calculated values
+    document.getElementById(`${tabType}-emi`).textContent = formatCurrency(emi);
+    document.getElementById(`${tabType}-totalprincipal`).textContent = formatCurrency(loanAmount);
+    document.getElementById(`${tabType}-totalinterest`).textContent = formatCurrency(totalInterest);
+    document.getElementById(`${tabType}-totalamount`).textContent = formatCurrency(totalPayment);
+
+    // If this is the current tab, update the chart EMI display
+    if (currentTab === tabType) {
+        document.getElementById('chartEmi').textContent = formatCurrency(emi);
+    }
+    updatePieChart(loanAmount, totalInterest); // Update the pie chart
+    animateResults(tabType); // Animate the results section
 }
+
+// --- Formatting and Chart Functions ---
 
 // Format currency values
 function formatCurrency(value) {
-    const numberParts = value.toFixed(0).split('.');
-    let integerPart = numberParts[0];
-    const decimalPart = numberParts[1] ? '.' + numberParts[1] : '';
-
-    // Format the integer part for the Indian numbering system
-    const lastThreeDigits = integerPart.slice(-3);
-    const otherDigits = integerPart.slice(0, -3);
-    if (otherDigits !== '') {
-        integerPart = otherDigits.replace(/\B(?=(\d{2})+(?!\d))/g, ',') + ',' + lastThreeDigits;
+    if (isNaN(value) || value === null) {
+        return '₹0';
     }
-
-    return '₹' + integerPart + decimalPart;
+    const number = Math.round(value); // Round to nearest whole number
+    const formatter = new Intl.NumberFormat('en-IN', {
+        style: 'currency',
+        currency: 'INR',
+        minimumFractionDigits: 0,
+        maximumFractionDigits: 0,
+    });
+    return formatter.format(number);
 }
 
 // Update pie chart based on principal and interest values
@@ -150,13 +267,9 @@ function updatePieChart(principal, interest) {
     const chart = document.querySelector('.pie-chart');
 
     if (total <= 0) {
-        const interestDegrees = 0;
-        document.getElementById('principal-percentage').textContent = "";
-        document.getElementById('interest-percentage').textContent = "";
-        chart.style.background = `conic-gradient(
-            rgba(82, 109, 254, 0.9) 0deg ${interestDegrees}deg,
-            rgba(232, 237, 250, 0.9) ${interestDegrees}deg 360deg
-        )`;
+        document.getElementById('principal-percentage').textContent = "0.0%";
+        document.getElementById('interest-percentage').textContent = "0.0%";
+        chart.style.background = `conic-gradient(rgba(232, 237, 250, 0.9) 0deg 360deg)`; // Default to principal color if no values
         return;
     }
 
@@ -171,20 +284,11 @@ function updatePieChart(principal, interest) {
     // Convert percentages to degrees for the arc
     const interestDegrees = (interestPercent / 100) * 360;
 
-    // For the donut style, we'll use conic-gradient instead of clip-path
-    if (interestPercent <= 0) {
-        // All principal
-        chart.style.background = 'rgba(232, 237, 250, 0.9)';
-    } else if (principalPercent <= 0) {
-        // All interest
-        chart.style.background = 'rgba(82, 109, 254, 0.9)';
-    } else {
-        // Mixed - use conic gradient
-        chart.style.background = `conic-gradient(
-            rgba(82, 109, 254, 0.9) 0deg ${interestDegrees}deg,
-            rgba(232, 237, 250, 0.9) ${interestDegrees}deg 360deg
-        )`;
-    }
+    // For the donut style, we'll use conic-gradient
+    chart.style.background = `conic-gradient(
+        rgba(82, 109, 254, 0.9) 0deg ${interestDegrees}deg,
+        rgba(232, 237, 250, 0.9) ${interestDegrees}deg 360deg
+    )`;
 }
 
 // Function to animate results when updated
@@ -207,260 +311,311 @@ function animateResults(tabType) {
     }
 }
 
-//shows the error message
-function showError(id, message) {
-    // Check if an error message already exists
-    let existingError = id.parentNode.querySelector(".error");
+// --- Error Handling Functions ---
+
+// Shows an error message next to the input field
+function showError(element, message) {
+    let existingError = element.parentNode.querySelector(".error");
     if (existingError) {
-        existingError.textContent = message; // Update the existing error message
+        existingError.textContent = message;
     } else {
         let errorMessage = document.createElement("div");
         errorMessage.textContent = message;
         errorMessage.classList.add('error');
-        id.parentNode.appendChild(errorMessage);
+        element.parentNode.appendChild(errorMessage);
+    }
+    element.classList.add('input-error'); // Add a class for styling
+}
+
+// Clears an error message
+function clearError(element) {
+    let errorMessage = element.parentNode.querySelector(".error");
+    if (errorMessage) {
+        errorMessage.remove();
+    }
+    element.classList.remove('input-error'); // Remove error styling
+}
+
+// NEW: Shows an error message in a specified container
+function showErrorInContainer(containerElement, message) {
+    let existingError = containerElement.querySelector(".error");
+    if (existingError) {
+        existingError.textContent = message;
+    } else {
+        let errorMessage = document.createElement("div");
+        errorMessage.textContent = message;
+        errorMessage.classList.add('error');
+        containerElement.appendChild(errorMessage);
+    }
+    // No .input-error class added to container itself, as it's not an input
+}
+
+// NEW: Clears an error message from a specified container
+function clearErrorForElement(containerElement) {
+    let errorMessage = containerElement.querySelector(".error");
+    if (errorMessage) {
+        errorMessage.remove();
+    }
+    // No .input-error class removed, as it's not an input
+}
+
+
+// Clears all error messages for a specific tab
+function clearAllErrors(tabType) {
+    document.querySelectorAll(`#${tabType} .error`).forEach(errorDiv => {
+        errorDiv.remove();
+    });
+    document.querySelectorAll(`#${tabType} .input-error`).forEach(inputField => {
+        inputField.classList.remove('input-error');
+    });
+    // NEW: Also explicitly clear the dedicated time error container
+    const dedicatedTimeErrorContainer = document.getElementById(`${tabType}-time-error-container`);
+    if (dedicatedTimeErrorContainer) {
+        clearErrorForElement(dedicatedTimeErrorContainer);
     }
 }
 
-//clear the error message
-function clearError(input) {
-    let errorMessage = input.parentNode.querySelector(".error");
-    if (errorMessage) errorMessage.remove(); // Remove the error message from the DOM
-    input.style.border = "";
+// --- Reset Functions ---
+
+// Resets the calculated EMI results display for a tab
+function resetResultsDisplay(tabType) {
+    document.getElementById(`${tabType}-emi`).textContent = formatCurrency(0);
+    document.getElementById(`${tabType}-totalprincipal`).textContent = formatCurrency(0);
+    document.getElementById(`${tabType}-totalinterest`).textContent = formatCurrency(0);
+    document.getElementById(`${tabType}-totalamount`).textContent = formatCurrency(0);
+    document.getElementById('chartEmi').textContent = formatCurrency(0); // Ensure chart EMI display is also reset
 }
 
-function reset(tabType) {
-    document.getElementById(`${tabType}-emi`).textContent = "";
-    document.getElementById(`${tabType}-totalprincipal`).textContent = "";
-    document.getElementById(`${tabType}-totalinterest`).textContent = "";
-    document.getElementById(`${tabType}-totalamount`).textContent = "";
-    if (currentTab === tabType) {
-        document.getElementById('chartEmi').textContent = 0;
-    }
-}
-
-function checkValidation(tabType, principal, rate, downPayment, years, months) {
-
-    if (isNaN(principal) || isNaN(rate) || isNaN(downPayment) || isNaN(years) || isNaN(months)) {
-        return false;
-    }
-
-    // Validate inputs
-    if (principal < 0) {
-        return false;
-    }
-    if (tabType === 'personal' && (rate < 15 || rate > 25)) {
-        return false;
-    }
-
-    if (tabType === 'home' && (rate < 10 || rate > 15)) {
-        return false;
-    }
-
-    if (tabType === 'car' && (rate < 10 || rate > 25)) {
-        return false;
-    }
-
-    if (years < 0 || months < 0 || months > 11 || (years === 0 && months === 0)) {
-        return false;
-    }
-    if (downPayment < 0 || downPayment > principal) {
-        return false;
-    }
-
-    let timePeriod = years * 12 + months;
-
-    if (tabType === 'home' && timePeriod > 360) {
-        return false;
-    }
-
-    if (tabType === 'car' && timePeriod > 84) {
-        return false;
-    }
-
-    if (tabType === 'personal' && timePeriod > 120) {
-        return false;
-    }
-
-    return true;
-}
-
-// Calculate EMI and update UI for a specific tab
-function calculateEMI(tabType) {
-    // Get inputs
-    const principal = parseFloat(document.getElementById(`${tabType}-principal`).value);
-    const rate = parseFloat(document.getElementById(`${tabType}-rate`).value);
-    let downPayment = 0;
-    if (tabType !== 'personal') {
-        downPayment = parseFloat(document.getElementById(`${tabType}-downpayment`).value);
-    }
-    const years = parseInt(document.getElementById(`${tabType}-years`).value);
-    const months = parseInt(document.getElementById(`${tabType}-months`).value);
-
-    // Validate inputs
-    if (!checkValidation(tabType, principal, rate, downPayment, years, months)) {
-        reset(tabType);
-        return { loanAmount: 0, totalInterest: 0, totalPayment: 0, emi: 0 };
-    }
-
-
-    // Calculate loan amount (principal - down payment)
-    const loanAmount = principal - downPayment;
-
-    // Calculate total months
-    const totalMonths = (years * 12) + months;
-
-    // Calculate monthly interest rate
-    const monthlyRate = (rate / 12) / 100;
-
-    // Calculate EMI
-    let emi = 0;
-    if (loanAmount > 0 && totalMonths > 0 && rate > 0) {
-        const numerator = loanAmount * monthlyRate * Math.pow(1 + monthlyRate, totalMonths);
-        const denominator = Math.pow(1 + monthlyRate, totalMonths) - 1;
-        emi = numerator / denominator;
-    }
-
-    // Calculate total payment and interest
-    const totalPayment = emi * totalMonths;
-    const totalInterest = totalPayment - loanAmount;
-
-    // Update UI with calculated values
-    document.getElementById(`${tabType}-emi`).textContent = formatCurrency(emi);
-    document.getElementById(`${tabType}-totalprincipal`).textContent = formatCurrency(loanAmount);
-    document.getElementById(`${tabType}-totalinterest`).textContent = formatCurrency(totalInterest);
-    document.getElementById(`${tabType}-totalamount`).textContent = formatCurrency(totalPayment);
-
-    // If this is the current tab, update the chart EMI display
-    if (currentTab === tabType) {
-        document.getElementById('chartEmi').textContent = formatCurrency(emi);
-    }
-
-    return {
-        loanAmount,
-        totalInterest,
-        totalPayment,
-        emi
-    };
-}
-
+// Resets all inputs and results for a tab
 function resetButton(tabType) {
-    // Clear input fields
     document.getElementById(`${tabType}-principal`).value = "";
     document.getElementById(`${tabType}-rate`).value = "";
     if (tabType !== 'personal') {
-        document.getElementById(`${tabType}-downpayment`).value = ""; // Clear downpayment for non-personal tabs
+        document.getElementById(`${tabType}-downpayment`).value = "";
     }
     document.getElementById(`${tabType}-years`).value = "";
     document.getElementById(`${tabType}-months`).value = "";
-    reset(tabType);
-    // Clear errors
-    const inputs = document.querySelectorAll(`#${tabType} input`);
-    inputs.forEach(input => {
-        clearError(input); // Clear error messages and reset styles
-    });
 
-    // Reset chart and EMI display
-    reset(tabType);
-    updatePieChart(0, 0);
-    document.getElementById('chartEmi').textContent = 0;
+    clearAllErrors(tabType); // Clear all errors on reset
+    resetResultsDisplay(tabType); // Reset calculation display
+    updatePieChart(0, 0); // Reset pie chart
 }
 
-//function to validate the principal amount
-function addValidation(inputId, validationFn, errorMessage) {
-    document.getElementById(inputId).addEventListener('input', function () { // Use 'input' event for real-time validation
-        const value = parseFloat(this.value); // Parse the value as a number
-        if (!validationFn(value)) {
-            showError(this, errorMessage);
-        } else {
-            clearError(this);
+// --- Real-time Input Validation Setup ---
+
+// This function sets up event listeners for real-time validation feedback (not for calculation trigger)
+function setupInputValidations() {
+    ['personal', 'home', 'car'].forEach(tabType => {
+        const principalField = document.getElementById(`${tabType}-principal`);
+        const rateField = document.getElementById(`${tabType}-rate`);
+        const yearsField = document.getElementById(`${tabType}-years`);
+        const monthsField = document.getElementById(`${tabType}-months`);
+        const downPaymentField = document.getElementById(`${tabType}-downpayment`);
+        // NEW: Get the dedicated error container for time-related errors
+        const dedicatedTimeErrorContainer = document.getElementById(`${tabType}-time-error-container`);
+
+
+        // Helper to validate a single field on input (shows immediate errors)
+        // Modified to handle numeric-only validation and required check on blur
+        const validateFieldOnInput = (field, validationCheck, errorMessage, isDecimalAllowed = true) => {
+            field.addEventListener('input', () => {
+                let value = field.value.trim();
+                let sanitizedValue = isDecimalAllowed ? value.replace(/[^\d.]/g, '') : value.replace(/[^\d]/g, '');
+
+                if (value !== sanitizedValue) {
+                    field.value = sanitizedValue; // Update the field to remove invalid characters
+                    showError(field, `⚠️Only ${isDecimalAllowed ? 'numeric' : 'whole number'} input is allowed.`);
+                    return; // Stop further validation for this input event
+                } else {
+                    // Clear the numeric-only error if it was previously shown and input is now valid
+                    const existingNumError = field.parentNode.querySelector(".error");
+                    if (existingNumError && existingNumError.textContent.includes("Only numeric input is allowed.")) {
+                        clearError(field);
+                    }
+                }
+
+                if (sanitizedValue === "") {
+                    clearError(field); // Clear any existing error if field becomes empty
+                    return;
+                }
+
+                const numValue = parseFloat(sanitizedValue);
+                if (!validationCheck(numValue)) {
+                    showError(field, errorMessage);
+                } else {
+                    clearError(field);
+                }
+            });
+            // Also check on blur to catch empty required fields
+            field.addEventListener('blur', () => {
+                if (field.value.trim() === "") {
+                    showError(field, "⚠️This field is required.");
+                }
+            });
+        };
+
+        // Principal validation (with auto-rounding on blur)
+        principalField.addEventListener('input', () => {
+            let value = principalField.value.trim();
+            let sanitizedValue = value.replace(/[^\d.]/g, ''); // Allow digits and one decimal
+            if (value !== sanitizedValue) {
+                principalField.value = sanitizedValue;
+                showError(principalField, "⚠️Only numeric input is allowed.");
+                return;
+            } else {
+                clearError(principalField);
+            }
+            if (sanitizedValue === "") {
+                clearError(principalField);
+                return;
+            }
+            let numValue = parseFloat(sanitizedValue);
+            if (isNaN(numValue) || numValue <= 0) {
+                showError(principalField, "⚠️Principal must be a positive number.");
+            } else {
+                clearError(principalField);
+            }
+        });
+        principalField.addEventListener('blur', () => {
+            let value = principalField.value.trim();
+            if (value === "") {
+                showError(principalField, "⚠️This field is required.");
+            } else {
+                let numValue = parseFloat(value);
+                if (!isNaN(numValue)) {
+                    principalField.value = Math.round(numValue); // Round on blur
+                    clearError(principalField);
+                } else {
+                    showError(principalField, "⚠️Principal must be a positive whole number.");
+                }
+            }
+        });
+
+        // Rate validation
+        const { min: rateMin, max: rateMax } = INTEREST_RATES[tabType];
+        validateFieldOnInput(rateField, value => !isNaN(value) && value >= rateMin && value <= rateMax, `⚠️Rate must be between ${rateMin}% and ${rateMax}%.`);
+
+        // Downpayment validation (if applicable - with auto-rounding on blur)
+        if (tabType !== 'personal') {
+            downPaymentField.addEventListener('input', () => {
+                let value = downPaymentField.value.trim();
+                let sanitizedValue = value.replace(/[^\d.]/g, ''); // Allow digits and one decimal
+                if (value !== sanitizedValue) {
+                    downPaymentField.value = sanitizedValue;
+                    showError(downPaymentField, "⚠️Only numeric input is allowed.");
+                    return;
+                } else {
+                    clearError(downPaymentField);
+                }
+                if (sanitizedValue === "") {
+                    clearError(downPaymentField);
+                    return;
+                }
+                let numValue = parseFloat(sanitizedValue);
+                const currentPrincipal = parseFloat(principalField.value) || 0;
+                if (isNaN(numValue) || numValue < 0 || numValue > currentPrincipal) {
+                    showError(downPaymentField, "⚠️Down payment must be a non-negative number less than or equal to principal.");
+                } else {
+                    clearError(downPaymentField);
+                }
+            });
+            downPaymentField.addEventListener('blur', () => {
+                let value = downPaymentField.value.trim();
+                if (value === "") {
+                    showError(downPaymentField, "⚠️This field is required.");
+                } else {
+                    let numValue = parseFloat(value);
+                    if (!isNaN(numValue)) {
+                        downPaymentField.value = Math.round(numValue); // Round on blur
+                        clearError(downPaymentField);
+                    } else {
+                        showError(downPaymentField, "⚠️Down payment must be a whole number between 0 and principal amount.");
+                    }
+                }
+            });
+
+            // Add an additional listener to principal to re-validate downpayment if principal changes
+            principalField.addEventListener('input', () => {
+                if (downPaymentField.value.trim() !== "") { // Only re-validate if downpayment has a value
+                    const dpValue = parseFloat(downPaymentField.value);
+                    const currentPrincipal = parseFloat(principalField.value) || 0;
+                    if (!isNaN(dpValue) && dpValue >= 0 && dpValue > currentPrincipal) {
+                        showError(downPaymentField, "⚠️Down payment must be less than or equal to principal amount.");
+                    } else {
+                        clearError(downPaymentField);
+                    }
+                }
+            });
         }
+
+        // Years validation (numeric-only and whole number)
+        validateFieldOnInput(yearsField, value => !isNaN(value) && value >= 0 && value % 1 === 0, "⚠️Years of loan must be a non-negative whole number.", false);
+        yearsField.addEventListener('blur', () => {
+            if (yearsField.value.trim() === "") {
+                showError(yearsField, "⚠️This field is required.");
+            }
+        });
+
+        // Months validation (numeric-only and whole number)
+        validateFieldOnInput(monthsField, value => !isNaN(value) && value >= 0 && value < 12 && value % 1 === 0, "⚠️Months must be a whole number between 0 and 11.", false);
+        monthsField.addEventListener('blur', () => {
+            if (monthsField.value.trim() === "") {
+                showError(monthsField, "⚠️This field is required.");
+            }
+        });
+
+        // Combined Years and Months (0 and 0) real-time validation
+        const validateYearsAndMonthsCombined = () => {
+            const yearsValue = parseInt(yearsField.value);
+            const monthsValue = parseInt(monthsField.value);
+
+            const isYearsZero = yearsField.value.trim() !== "" && !isNaN(yearsValue) && yearsValue === 0;
+            const isMonthsZero = monthsField.value.trim() !== "" && !isNaN(monthsValue) && monthsValue === 0;
+
+            // Clear the specific combined zero error message if it was previously set
+            let combinedZeroErrorDiv = monthsField.parentNode.querySelector(".error");
+            if (combinedZeroErrorDiv && combinedZeroErrorDiv.textContent === "⚠️Loan period cannot be 0 years and 0 months.") {
+                clearError(monthsField);
+            }
+
+            if (isYearsZero && isMonthsZero) {
+                showError(monthsField, "⚠️Loan period cannot be 0 years and 0 months.");
+            }
+        };
+
+        yearsField.addEventListener('input', validateYearsAndMonthsCombined);
+        monthsField.addEventListener('input', validateYearsAndMonthsCombined);
+        yearsField.addEventListener('blur', validateYearsAndMonthsCombined);
+        monthsField.addEventListener('blur', validateYearsAndMonthsCombined);
+
+        // Total loan period max limit real-time validation
+        const validateTotalTimePeriodOnInput = () => {
+            const years = parseInt(yearsField.value) || 0;
+            const months = parseInt(monthsField.value) || 0;
+            const totalMonths = (years * 12) + months;
+            const maxAllowedMonths = MAX_LOAN_PERIODS[tabType];
+
+            // Retain this line as requested:
+            // const timeGroupElement = yearsField.closest('.time-inputs');
+
+            // Clear previous max period error for this specific container
+            let existingMaxError = dedicatedTimeErrorContainer.querySelector(".error");
+            if (existingMaxError && existingMaxError.textContent.includes("loan period cannot exceed")) {
+                clearErrorForElement(dedicatedTimeErrorContainer);
+            }
+
+            if (totalMonths > maxAllowedMonths) {
+                // Show error in the dedicated container
+                showErrorInContainer(dedicatedTimeErrorContainer, `⚠️${tabType.charAt(0).toUpperCase() + tabType.slice(1)} loan period cannot exceed ${maxAllowedMonths / 12} years.`);
+            } else {
+                // Ensure to clear this specific error if conditions become valid
+                clearErrorForElement(dedicatedTimeErrorContainer);
+            }
+        };
+
+        yearsField.addEventListener('input', validateTotalTimePeriodOnInput);
+        monthsField.addEventListener('input', validateTotalTimePeriodOnInput);
+        yearsField.addEventListener('blur', validateTotalTimePeriodOnInput);
+        monthsField.addEventListener('blur', validateTotalTimePeriodOnInput);
     });
 }
-
-//vatidate the principal amount
-addValidation("personal-principal", value => !isNaN(value) && value > 0, "⚠️Principal must be greater than 0.");
-addValidation("home-principal", value => !isNaN(value) && value > 0, "⚠️Principal must be greater than 0.");
-addValidation("car-principal", value => !isNaN(value) && value > 0, "⚠️Principal must be greater than 0.");
-
-// Validate rate of interest
-addValidation("personal-rate", value => !isNaN(value) && value >= 15 && value <= 25, "⚠️Rate must be between 15% and 25%.");
-addValidation("home-rate", value => !isNaN(value) && value >= 10 && value <= 15, "⚠️Rate must be between 10% and 15%.");
-addValidation("car-rate", value => !isNaN(value) && value >= 10 && value <= 25, "⚠️Rate must be between 10% and 25%.");
-
-// Validate downpayment
-addValidation("home-downpayment", value => !isNaN(value) && value >= 0, "⚠️Down payment must be greater than or equal to 0.");
-addValidation("car-downpayment", value => !isNaN(value) && value >= 0, "⚠️Down payment must be greater than or equal to 0.");
-
-// Validate years of loan
-addValidation("personal-years", value => !isNaN(value) && value >= 0, "⚠️Years of loan must be greater than or equal to 0.");
-addValidation("home-years", value => !isNaN(value) && value >= 0, "⚠️Years of loan must be greater than or equal to 0.");
-addValidation("car-years", value => !isNaN(value) && value >= 0, "⚠️Years of loan must be greater than or equal to 0.");
-
-// Validate downpayment against principal amount for home loan
-addValidation("home-downpayment", function (value) {
-    const principal = parseFloat(document.getElementById("home-principal").value);
-    return !isNaN(value) && value >= 0 && value <= principal;
-}, "⚠️Down payment must be less than or equal to principal amount.");
-
-// Validate downpayment against principal amount for car loan
-addValidation("car-downpayment", function (value) {
-    const principal = parseFloat(document.getElementById("car-principal").value);
-    return !isNaN(value) && value >= 0 && value <= principal;
-}, "⚠️Down payment must be less than or equal to principal amount.");
-
-//Adding event listeners to calculate button
-document.getElementById("personal-calculate-btn").addEventListener('click', () => {
-    calculateAndUpdateChart('personal');
-});
-
-document.getElementById("home-calculate-btn").addEventListener('click', () => {
-    calculateAndUpdateChart('home');
-});
-
-document.getElementById("car-calculate-btn").addEventListener('click', () => {
-    calculateAndUpdateChart('car');
-});
-
-document.getElementById("personal-reset-btn").addEventListener('click', () => {
-    resetButton('personal');
-});
-
-document.getElementById("home-reset-btn").addEventListener('click', () => {
-    resetButton('home');
-});
-
-document.getElementById("car-reset-btn").addEventListener('click', () => {
-    resetButton('car');
-});
-
-['personal', 'home', 'car'].forEach(tabType => {
-    const yearsField = document.getElementById(`${tabType}-years`);
-    const monthsField = document.getElementById(`${tabType}-months`);
-
-    // Validate both fields together for the "years and months cannot both be 0" error
-    const validateYearsAndMonths = () => {
-        const yearsValue = parseInt(yearsField.value) || 0; // Dynamically fetch the latest value
-        const monthsValue = parseInt(monthsField.value) || 0; // Dynamically fetch the latest value
-
-        if (yearsValue === 0 && monthsValue === 0) {
-            showError(monthsField, "⚠️If years is 0, months cannot also be 0.");
-        } else {
-            clearError(monthsField);
-        }
-    };
-
-    // Add event listeners to both fields
-    yearsField.addEventListener('input', validateYearsAndMonths);
-    monthsField.addEventListener('input', () => {
-        const monthsValue = parseInt(monthsField.value) || 0; // Dynamically fetch the latest value
-        const yearsValue = parseInt(yearsField.value) || 0; // Dynamically fetch the latest value
-
-        if (isNaN(monthsValue) || monthsValue < 0 || monthsValue >= 12) {
-            showError(monthsField, "⚠️Months must be between 0 and 11.");
-        } else if (yearsValue === 0 && monthsValue === 0) {
-            showError(monthsField, "⚠️If years is 0, months cannot also be 0.");
-        } else {
-            clearError(monthsField);
-        }
-    });
-});
